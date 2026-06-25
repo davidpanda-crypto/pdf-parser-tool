@@ -1,1 +1,1 @@
-docling
+docling==2.69.1

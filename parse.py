@@ -5,13 +5,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
+import warnings
 from pathlib import Path
 
+# Suppress the LibreSSL/urllib3 compatibility warning noise on macOS system Python.
+warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
+# Docling logs full tracebacks on conversion failure; we surface a clean message instead.
+logging.getLogger("docling").setLevel(logging.CRITICAL)
+# docling_core.export_to_text() internally triggers its own bogus deprecation warning.
+logging.getLogger("docling_core").setLevel(logging.CRITICAL)
+
 from docling.document_converter import DocumentConverter
+from docling.exceptions import ConversionError
+from docling_core.types.doc import DoclingDocument
 
 
-def parse_pdf(pdf_path: Path) -> "DoclingDocument":
+def parse_pdf(pdf_path: Path) -> DoclingDocument:
     converter = DocumentConverter()
     result = converter.convert(str(pdf_path))
     return result.document
@@ -63,7 +74,12 @@ def main():
         print(f"Error: file not found: {args.pdf}", file=sys.stderr)
         sys.exit(1)
 
-    doc = parse_pdf(args.pdf)
+    try:
+        doc = parse_pdf(args.pdf)
+    except ConversionError as e:
+        print(f"Error: could not parse {args.pdf}: {e}", file=sys.stderr)
+        sys.exit(1)
+
     write_output(doc, args.pdf, args.format, args.output, args.tables_dir)
 
 
