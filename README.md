@@ -28,3 +28,12 @@ Extract any tables found in the PDF as CSV files:
 - `--format, -f` — `json` (full structured document), `markdown`, or `text` (default: `json`)
 - `--output, -o` — write to a file instead of stdout
 - `--tables-dir` — directory to write extracted tables as `<pdf-name>_table_N.csv`
+
+## Development
+
+```bash
+./.venv/bin/pip install -r requirements-dev.txt
+./.venv/bin/ruff check .
+./.venv/bin/ruff format .
+./.venv/bin/pytest
+```
