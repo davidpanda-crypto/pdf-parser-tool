@@ -8,6 +8,36 @@ import pytest
 import parse
 
 
+class _FakeEmptyDoc:
+    """Doc double with no tables/pictures/form items.
+
+    Used for "nothing found" code paths instead of relying on a live
+    OCR/layout conversion reporting exactly zero tables/pictures on our
+    minimal synthetic fixture -- observed in CI to vary by platform (macOS's
+    ocrmac backend hallucinated spurious 0-row tables on it that Linux/
+    Windows's rapidocr backend didn't). The functions under test here only
+    branch on doc.tables/doc.pictures being empty; they don't need a real
+    conversion to verify that branch.
+    """
+
+    class _FakeOrigin:
+        def model_dump(self, mode: str = "json") -> dict:
+            return {"mimetype": "application/pdf"}
+
+    tables: list = []
+    pictures: list = []
+    form_items: list = []
+    key_value_items: list = []
+    texts: list = []
+    origin = _FakeOrigin()
+
+    def num_pages(self) -> int:
+        return 1
+
+    def export_to_text(self) -> str:
+        return "Hello World"
+
+
 def test_parse_pdf_returns_document(sample_pdf: Path):
     doc = parse.parse_pdf(sample_pdf)
     assert "Hello World" in doc.export_to_text()
@@ -49,8 +79,7 @@ def test_render_rejects_unknown_format(sample_pdf: Path):
 
 
 def test_build_simple_dict_structure(sample_pdf: Path):
-    doc = parse.parse_pdf(sample_pdf)
-    simple = parse.build_simple_dict(doc, sample_pdf)
+    simple = parse.build_simple_dict(_FakeEmptyDoc(), sample_pdf)
     assert simple["filename"] == sample_pdf.name
     assert "Hello World" in simple["text"]
     assert simple["tables"] == []
@@ -105,24 +134,21 @@ def test_render_simple_requires_pdf_path():
 
 
 def test_extract_tables_with_no_tables_prints_message(sample_pdf: Path, tmp_path: Path, capsys):
-    doc = parse.parse_pdf(sample_pdf)
     tables_dir = tmp_path / "tables"
-    parse.extract_tables(doc, sample_pdf, tables_dir)
+    parse.extract_tables(_FakeEmptyDoc(), sample_pdf, tables_dir)
     assert "No tables found" in capsys.readouterr().out
     assert not tables_dir.exists()
 
 
 def test_extract_pictures_with_no_pictures_prints_message(sample_pdf: Path, tmp_path: Path, capsys):
-    doc = parse.parse_pdf(sample_pdf)
     images_dir = tmp_path / "pictures"
-    parse.extract_pictures(doc, sample_pdf, images_dir)
+    parse.extract_pictures(_FakeEmptyDoc(), sample_pdf, images_dir)
     assert "No embedded pictures found" in capsys.readouterr().out
     assert not images_dir.exists()
 
 
 def test_build_metadata_reports_counts(sample_pdf: Path):
-    doc = parse.parse_pdf(sample_pdf)
-    meta = parse.build_metadata(doc, sample_pdf)
+    meta = parse.build_metadata(_FakeEmptyDoc(), sample_pdf)
     assert meta["filename"] == sample_pdf.name
     assert meta["num_pages"] == 1
     assert meta["num_tables"] == 0
