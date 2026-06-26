@@ -13,6 +13,13 @@ fonts — reading the AcroForm dictionary directly avoids that. These values
 appear under a `form_fields` key in JSON output, or a "Form Field Values"
 section appended to markdown/text/html output.
 
+Note on scanned pages: some scanned pages (typically a single full-bleed
+background image with text directly on top) yield zero text under normal OCR,
+because the layout model never isolates a region to OCR in the first place.
+If a first pass comes back with no text at all, the tool automatically
+retries once with full-page OCR forced (`--force-full-page-ocr` to do this
+from the start instead of waiting for the empty-text fallback).
+
 ## Setup
 
 ```bash
@@ -64,6 +71,7 @@ Parse a password-protected PDF, a page subrange, or tune OCR/table recognition:
 - `--metadata` — print a JSON summary (page count, table/picture/form counts, file origin) to stderr
 - `--password` — password for an encrypted PDF
 - `--no-ocr` — disable OCR (on by default, for scanned/image-only pages)
+- `--force-full-page-ocr` — OCR the whole page instead of only layout-flagged regions (slower; fixes scanned pages that otherwise yield no text — applied automatically as a fallback if a first pass yields none)
 - `--ocr-lang` — comma-separated OCR languages, e.g. `en,fr`
 - `--table-mode` — `fast` or `accurate` (default: `accurate`) table structure recognition
 - `--page-range START END` — 1-based inclusive page range to parse

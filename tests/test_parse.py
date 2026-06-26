@@ -185,3 +185,80 @@ def test_main_page_range_restricts_pages(sample_pdf: Path, tmp_path: Path, capsy
     assert exit_code == 0
     meta = json.loads(capsys.readouterr().err)
     assert meta["num_pages"] == 1
+
+
+class _FakeDoc:
+    """Minimal export_to_text()-only double for exercising main()'s retry branch
+    without running a real (slow) OCR pass."""
+
+    def __init__(self, text: str):
+        self._text = text
+
+    def export_to_text(self):
+        return self._text
+
+
+def _patch_pipeline(monkeypatch, docs: list, form_fields: dict | None = None):
+    converter_calls = []
+
+    def fake_build_converter(**kwargs):
+        converter_calls.append(kwargs)
+        return object()
+
+    def fake_parse_pdf(pdf_path, converter, page_range):
+        return docs.pop(0)
+
+    monkeypatch.setattr(parse, "build_converter", fake_build_converter)
+    monkeypatch.setattr(parse, "parse_pdf", fake_parse_pdf)
+    monkeypatch.setattr(parse, "extract_form_fields", lambda *a, **k: form_fields or {})
+    return converter_calls
+
+
+def test_main_retries_with_full_page_ocr_when_no_text_found(
+    sample_pdf: Path, tmp_path: Path, monkeypatch, capsys
+):
+    docs = [_FakeDoc(""), _FakeDoc("recovered via full-page OCR")]
+    converter_calls = _patch_pipeline(monkeypatch, docs)
+
+    out_path = tmp_path / "out.txt"
+    exit_code = parse.main([str(sample_pdf), "-f", "text", "-o", str(out_path)])
+
+    assert exit_code == 0
+    assert out_path.read_text() == "recovered via full-page OCR"
+    assert [c["force_full_page_ocr"] for c in converter_calls] == [False, True]
+    assert "retrying with full-page OCR" in capsys.readouterr().err
+
+
+def test_main_does_not_retry_when_first_pass_has_text(sample_pdf: Path, tmp_path: Path, monkeypatch):
+    docs = [_FakeDoc("already has text")]
+    converter_calls = _patch_pipeline(monkeypatch, docs)
+
+    out_path = tmp_path / "out.txt"
+    exit_code = parse.main([str(sample_pdf), "-f", "text", "-o", str(out_path)])
+
+    assert exit_code == 0
+    assert len(converter_calls) == 1
+
+
+def test_main_no_ocr_skips_retry_even_when_text_is_empty(sample_pdf: Path, tmp_path: Path, monkeypatch):
+    docs = [_FakeDoc("")]
+    converter_calls = _patch_pipeline(monkeypatch, docs)
+
+    out_path = tmp_path / "out.txt"
+    exit_code = parse.main([str(sample_pdf), "-f", "text", "-o", str(out_path), "--no-ocr"])
+
+    assert exit_code == 0
+    assert len(converter_calls) == 1
+    assert converter_calls[0]["ocr"] is False
+
+
+def test_main_force_full_page_ocr_flag_skips_auto_retry(sample_pdf: Path, tmp_path: Path, monkeypatch):
+    docs = [_FakeDoc("")]
+    converter_calls = _patch_pipeline(monkeypatch, docs)
+
+    out_path = tmp_path / "out.txt"
+    exit_code = parse.main([str(sample_pdf), "-f", "text", "-o", str(out_path), "--force-full-page-ocr"])
+
+    assert exit_code == 0
+    assert len(converter_calls) == 1
+    assert converter_calls[0]["force_full_page_ocr"] is True

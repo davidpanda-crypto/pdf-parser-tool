@@ -48,8 +48,16 @@ def build_converter(
     password: str | None,
     want_pictures: bool,
     want_page_images: bool,
+    force_full_page_ocr: bool = False,
 ) -> DocumentConverter:
-    """Build a DocumentConverter configured for the requested level of detail."""
+    """Build a DocumentConverter configured for the requested level of detail.
+
+    force_full_page_ocr OCRs the whole page rather than only the regions the
+    layout model flags as needing it. Some scanned pages (typically a single
+    full-bleed background image with text directly on top) get zero text
+    under regional OCR because the layout model never isolates a text region
+    to OCR at all -- this is the fallback for those.
+    """
     pipeline_options = PdfPipelineOptions(
         do_ocr=ocr,
         generate_picture_images=want_pictures,
@@ -58,6 +66,7 @@ def build_converter(
     pipeline_options.table_structure_options.mode = TABLE_MODES[table_mode]
     if ocr_lang:
         pipeline_options.ocr_options.lang = ocr_lang
+    pipeline_options.ocr_options.force_full_page_ocr = force_full_page_ocr
 
     if password:
         # The default DoclingParseV4 backend doesn't propagate the password to
@@ -261,6 +270,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Disable OCR (by default, scanned/image-only pages are OCR'd)",
     )
     parser.add_argument(
+        "--force-full-page-ocr",
+        action="store_true",
+        help=(
+            "OCR the entire page rather than only regions the layout model flags. "
+            "Slower, but fixes scanned pages that otherwise yield zero text. "
+            "(Applied automatically as a fallback if a first pass yields no text at all.)"
+        ),
+    )
+    parser.add_argument(
         "--ocr-lang",
         default=None,
         help="Comma-separated OCR languages (e.g. 'en,fr'); defaults to the OCR engine's default",
@@ -289,21 +307,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: file not found: {args.pdf}", file=sys.stderr)
         return 1
 
+    ocr_lang = args.ocr_lang.split(",") if args.ocr_lang else None
+    page_range = tuple(args.page_range) if args.page_range else (1, sys.maxsize)
     converter = build_converter(
         ocr=not args.no_ocr,
         table_mode=args.table_mode,
-        ocr_lang=args.ocr_lang.split(",") if args.ocr_lang else None,
+        ocr_lang=ocr_lang,
         password=args.password,
         want_pictures=bool(args.images_dir),
         want_page_images=bool(args.page_images_dir),
+        force_full_page_ocr=args.force_full_page_ocr,
     )
-    page_range = tuple(args.page_range) if args.page_range else (1, sys.maxsize)
 
     try:
         doc = parse_pdf(args.pdf, converter, page_range)
     except ConversionError as e:
         print(f"Error: could not parse {args.pdf}: {e}", file=sys.stderr)
         return 1
+
+    if not args.no_ocr and not args.force_full_page_ocr and not doc.export_to_text().strip():
+        # Some scanned pages (typically one full-bleed background image with text
+        # directly on top) yield zero text under regional OCR: the layout model
+        # never isolates a region to OCR in the first place. Retry forcing OCR
+        # over the whole page before giving up.
+        print("No text found; retrying with full-page OCR forced...", file=sys.stderr)
+        converter = build_converter(
+            ocr=True,
+            table_mode=args.table_mode,
+            ocr_lang=ocr_lang,
+            password=args.password,
+            want_pictures=bool(args.images_dir),
+            want_page_images=bool(args.page_images_dir),
+            force_full_page_ocr=True,
+        )
+        doc = parse_pdf(args.pdf, converter, page_range)
 
     form_fields = extract_form_fields(args.pdf, args.password)
     write_text_output(render(doc, args.format, form_fields), args.format, args.output)
