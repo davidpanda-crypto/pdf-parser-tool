@@ -30,6 +30,18 @@ def test_render_json_is_valid_and_structured(sample_pdf: Path):
     assert any("Hello World" in t.get("text", "") for t in data["texts"])
 
 
+def test_render_html(sample_pdf: Path):
+    doc = parse.parse_pdf(sample_pdf)
+    html = parse.render(doc, "html")
+    assert "<html>" in html
+    assert "Hello World" in html
+
+
+def test_render_doctags(sample_pdf: Path):
+    doc = parse.parse_pdf(sample_pdf)
+    assert "<doctag>" in parse.render(doc, "doctags")
+
+
 def test_render_rejects_unknown_format(sample_pdf: Path):
     doc = parse.parse_pdf(sample_pdf)
     with pytest.raises(ValueError):
@@ -42,6 +54,46 @@ def test_extract_tables_with_no_tables_prints_message(sample_pdf: Path, tmp_path
     parse.extract_tables(doc, sample_pdf, tables_dir)
     assert "No tables found" in capsys.readouterr().out
     assert not tables_dir.exists()
+
+
+def test_extract_pictures_with_no_pictures_prints_message(sample_pdf: Path, tmp_path: Path, capsys):
+    doc = parse.parse_pdf(sample_pdf)
+    images_dir = tmp_path / "pictures"
+    parse.extract_pictures(doc, sample_pdf, images_dir)
+    assert "No embedded pictures found" in capsys.readouterr().out
+    assert not images_dir.exists()
+
+
+def test_build_metadata_reports_counts(sample_pdf: Path):
+    doc = parse.parse_pdf(sample_pdf)
+    meta = parse.build_metadata(doc, sample_pdf)
+    assert meta["filename"] == sample_pdf.name
+    assert meta["num_pages"] == 1
+    assert meta["num_tables"] == 0
+    assert meta["num_pictures"] == 0
+    assert meta["origin"]["mimetype"] == "application/pdf"
+
+
+def test_build_converter_uses_pypdfium_backend_when_password_given():
+    converter = parse.build_converter(
+        ocr=True,
+        table_mode="accurate",
+        ocr_lang=None,
+        password="secret",
+        want_pictures=False,
+        want_page_images=False,
+    )
+    format_option = converter.format_to_options[parse.InputFormat.PDF]
+    assert format_option.backend is parse.PyPdfiumDocumentBackend
+    assert format_option.backend_options.password.get_secret_value() == "secret"
+
+
+def test_build_converter_uses_default_backend_without_password():
+    converter = parse.build_converter(
+        ocr=True, table_mode="fast", ocr_lang=None, password=None, want_pictures=False, want_page_images=False
+    )
+    format_option = converter.format_to_options[parse.InputFormat.PDF]
+    assert format_option.backend is not parse.PyPdfiumDocumentBackend
 
 
 def test_main_missing_file_returns_1(tmp_path: Path, capsys):
@@ -63,3 +115,21 @@ def test_main_writes_output_file(sample_pdf: Path, tmp_path: Path):
     exit_code = parse.main([str(sample_pdf), "-f", "text", "-o", str(out_path)])
     assert exit_code == 0
     assert "Hello World" in out_path.read_text()
+
+
+def test_main_metadata_flag_prints_json_to_stderr(sample_pdf: Path, tmp_path: Path, capsys):
+    out_path = tmp_path / "out.txt"
+    exit_code = parse.main([str(sample_pdf), "-f", "text", "-o", str(out_path), "--metadata"])
+    assert exit_code == 0
+    meta = json.loads(capsys.readouterr().err)
+    assert meta["num_pages"] == 1
+
+
+def test_main_page_range_restricts_pages(sample_pdf: Path, tmp_path: Path, capsys):
+    out_path = tmp_path / "out.txt"
+    exit_code = parse.main(
+        [str(sample_pdf), "-f", "text", "-o", str(out_path), "--page-range", "1", "1", "--metadata"]
+    )
+    assert exit_code == 0
+    meta = json.loads(capsys.readouterr().err)
+    assert meta["num_pages"] == 1
