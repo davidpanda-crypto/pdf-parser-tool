@@ -111,6 +111,16 @@ def test_render_without_form_fields_is_unchanged(sample_pdf: Path):
     assert "Form Field Values" not in parse.render(doc, "markdown", {})
 
 
+def test_render_html_escapes_form_field_values(form_pdf: Path):
+    doc = parse.parse_pdf(form_pdf)
+    malicious_fields = {"<script>": "</script><b>injected</b>"}
+    html = parse.render(doc, "html", malicious_fields)
+    assert "<script>" not in html
+    assert "<b>injected</b>" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;b&gt;injected&lt;/b&gt;" in html
+
+
 def test_build_metadata_reports_acroform_field_count(form_pdf: Path):
     doc = parse.parse_pdf(form_pdf)
     form_fields = parse.extract_form_fields(form_pdf)

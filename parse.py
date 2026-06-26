@@ -11,11 +11,13 @@ from their labels).
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import logging
 import sys
 import warnings
 from pathlib import Path
+from typing import Literal
 
 # Suppress the LibreSSL/urllib3 compatibility warning noise on macOS system Python.
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
@@ -36,7 +38,7 @@ from docling_core.types.doc import DoclingDocument  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 
-OutputFormat = str  # one of "json", "markdown", "text", "html", "doctags"
+OutputFormat = Literal["json", "markdown", "text", "html", "doctags"]
 TABLE_MODES = {"fast": TableFormerMode.FAST, "accurate": TableFormerMode.ACCURATE}
 
 
@@ -113,7 +115,10 @@ def extract_form_fields(pdf_path: Path, password: str | None = None) -> dict[str
 
 def _format_form_fields_block(form_fields: dict[str, str], fmt: OutputFormat) -> str:
     if fmt == "html":
-        items = "".join(f"<li><b>{name}</b>: {value}</li>" for name, value in form_fields.items())
+        items = "".join(
+            f"<li><b>{html.escape(name)}</b>: {html.escape(value)}</li>"
+            for name, value in form_fields.items()
+        )
         return f"<h2>Form Field Values</h2><ul>{items}</ul>"
     lines = ["## Form Field Values", ""]
     lines += [f"- {name}: {value}" for name, value in form_fields.items()]
@@ -205,7 +210,9 @@ def extract_page_images(doc: DoclingDocument, pdf_path: Path, page_images_dir: P
         print(f"Wrote page {page_no} image to {png_path}")
 
 
-def build_metadata(doc: DoclingDocument, pdf_path: Path, form_fields: dict[str, str] | None = None) -> dict:
+def build_metadata(
+    doc: DoclingDocument, pdf_path: Path, form_fields: dict[str, str] | None = None
+) -> dict[str, object]:
     """Summarize document-level metadata: page count, element counts, file origin."""
     return {
         "filename": pdf_path.name,
@@ -309,18 +316,20 @@ def main(argv: list[str] | None = None) -> int:
 
     ocr_lang = args.ocr_lang.split(",") if args.ocr_lang else None
     page_range = tuple(args.page_range) if args.page_range else (1, sys.maxsize)
-    converter = build_converter(
-        ocr=not args.no_ocr,
-        table_mode=args.table_mode,
-        ocr_lang=ocr_lang,
-        password=args.password,
-        want_pictures=bool(args.images_dir),
-        want_page_images=bool(args.page_images_dir),
-        force_full_page_ocr=args.force_full_page_ocr,
-    )
+
+    def build(*, force_full_page_ocr: bool) -> DocumentConverter:
+        return build_converter(
+            ocr=not args.no_ocr,
+            table_mode=args.table_mode,
+            ocr_lang=ocr_lang,
+            password=args.password,
+            want_pictures=bool(args.images_dir),
+            want_page_images=bool(args.page_images_dir),
+            force_full_page_ocr=force_full_page_ocr,
+        )
 
     try:
-        doc = parse_pdf(args.pdf, converter, page_range)
+        doc = parse_pdf(args.pdf, build(force_full_page_ocr=args.force_full_page_ocr), page_range)
     except ConversionError as e:
         print(f"Error: could not parse {args.pdf}: {e}", file=sys.stderr)
         return 1
@@ -331,16 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         # never isolates a region to OCR in the first place. Retry forcing OCR
         # over the whole page before giving up.
         print("No text found; retrying with full-page OCR forced...", file=sys.stderr)
-        converter = build_converter(
-            ocr=True,
-            table_mode=args.table_mode,
-            ocr_lang=ocr_lang,
-            password=args.password,
-            want_pictures=bool(args.images_dir),
-            want_page_images=bool(args.page_images_dir),
-            force_full_page_ocr=True,
-        )
-        doc = parse_pdf(args.pdf, converter, page_range)
+        doc = parse_pdf(args.pdf, build(force_full_page_ocr=True), page_range)
 
     form_fields = extract_form_fields(args.pdf, args.password)
     write_text_output(render(doc, args.format, form_fields), args.format, args.output)
