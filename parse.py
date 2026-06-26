@@ -283,10 +283,12 @@ def extract_page_images(doc: DoclingDocument, pdf_path: Path, page_images_dir: P
 
     page_images_dir.mkdir(parents=True, exist_ok=True)
     for page_no, page in sorted(doc.pages.items()):
-        if page.image is None:
+        pil_image = page.image.pil_image if page.image is not None else None
+        if pil_image is None:
+            print(f"Skipping page {page_no}: no image available (decode failed or not generated)")
             continue
         png_path = page_images_dir / f"{pdf_path.stem}_page_{page_no}.png"
-        page.image.pil_image.save(png_path)
+        pil_image.save(png_path)
         print(f"Wrote page {page_no} image to {png_path}")
 
 
