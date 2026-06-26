@@ -1,2 +1,5 @@
 docling==2.69.1
 pypdf==6.14.2
+# rapidocr 3.9.0 has a broken model registry entry for torch.PP-OCRv6.det.small,
+# which Linux (no ocrmac) hits via docling's "auto" OCR engine selection.
+rapidocr<3.9.0
