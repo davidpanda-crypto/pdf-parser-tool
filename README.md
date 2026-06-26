@@ -20,6 +20,18 @@ If a first pass comes back with no text at all, the tool automatically
 retries once with full-page OCR forced (`--force-full-page-ocr` to do this
 from the start instead of waiting for the empty-text fallback).
 
+Note on table structure fidelity: Docling's table-structure model can fail to
+detect column boundaries on **borderless** tables (no visible grid lines),
+collapsing what's actually a multi-column, multi-row table into a single
+column with cells that concatenate many original cells' text together.
+Verified against a real report: a 2-column/10-row table came back as 1
+column with a 1292-character cell. `--format simple` flags this per table as
+`"possibly_under_segmented": true` whenever a single-column table has an
+unusually long cell — when you see that flag, cross-check the table against
+the source page (`--page-images-dir`) rather than trusting the row data as-is.
+This is a real limitation of the underlying model, not something this tool
+can fully correct; the flag exists so it's surfaced instead of silently wrong.
+
 ## Setup
 
 ```bash
@@ -31,11 +43,19 @@ python3 -m venv .venv
 
 ```bash
 ./.venv/bin/python parse.py input.pdf --format json -o output.json
+./.venv/bin/python parse.py input.pdf --format simple -o output.json
 ./.venv/bin/python parse.py input.pdf --format markdown
 ./.venv/bin/python parse.py input.pdf --format text
 ./.venv/bin/python parse.py input.pdf --format html
 ./.venv/bin/python parse.py input.pdf --format doctags
 ```
+
+`json` is Docling's full internal schema — every text/table/picture is a node
+with `$ref` pointers, bounding boxes, and provenance. `simple` is a flat view
+of the same document: plain `text`, a `headings` list, `tables` as actual row
+data (with a `page` number and the under-segmentation flag described below),
+`pictures` with captions, and `form_fields` — built for consumers who just
+want the content, not Docling's internal bookkeeping.
 
 Extract tables, embedded pictures, and per-page renders:
 
@@ -63,7 +83,7 @@ Parse a password-protected PDF, a page subrange, or tune OCR/table recognition:
 
 ### Options
 
-- `--format, -f` — `json` (full structured document), `markdown`, `text`, `html`, or `doctags` (default: `json`)
+- `--format, -f` — `json` (full structured document), `simple` (flat, consumer-friendly JSON), `markdown`, `text`, `html`, or `doctags` (default: `json`)
 - `--output, -o` — write the rendered output to a file instead of stdout
 - `--tables-dir` — write each table as `<pdf-name>_table_N.csv`
 - `--images-dir` — write each embedded picture as `<pdf-name>_picture_N.png`

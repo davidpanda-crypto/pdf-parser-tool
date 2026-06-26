@@ -38,7 +38,7 @@ from docling_core.types.doc import DoclingDocument  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
 from pypdf import PdfReader  # noqa: E402
 
-OutputFormat = Literal["json", "markdown", "text", "html", "doctags"]
+OutputFormat = Literal["json", "simple", "markdown", "text", "html", "doctags"]
 TABLE_MODES = {"fast": TableFormerMode.FAST, "accurate": TableFormerMode.ACCURATE}
 
 
@@ -125,18 +125,98 @@ def _format_form_fields_block(form_fields: dict[str, str], fmt: OutputFormat) ->
     return "\n".join(lines)
 
 
-def render(doc: DoclingDocument, fmt: OutputFormat, form_fields: dict[str, str] | None = None) -> str:
+def _provenance_page(item) -> int | None:
+    """First page number an item appears on, or None if it has no provenance."""
+    return item.prov[0].page_no if item.prov else None
+
+
+_UNDER_SEGMENTED_CELL_LENGTH = 150
+
+
+def _looks_under_segmented(rows: list[list[object]], num_columns: int) -> bool:
+    """Heuristic: flag single-column tables with a suspiciously long cell.
+
+    Docling's table-structure model can fail to detect column boundaries on
+    borderless tables (no visible grid lines), collapsing what's actually a
+    multi-column, multi-row table into one column with cells that concatenate
+    many original cells' text together. A real single-column table (e.g. a
+    short list or a footnote) has short cells; a collapsed one doesn't.
+    Verified against a real report: a 2-col/10-row table collapsed to 1x2
+    with cells up to 1292 chars, while genuine 1-column captions stayed
+    under 90 chars -- this threshold separates the two cleanly.
+    """
+    if num_columns != 1:
+        return False
+    return any(len(str(cell)) > _UNDER_SEGMENTED_CELL_LENGTH for row in rows for cell in row)
+
+
+def build_simple_dict(
+    doc: DoclingDocument, pdf_path: Path, form_fields: dict[str, str] | None = None
+) -> dict[str, object]:
+    """A flat, directly-usable view of the document.
+
+    `--format json` exports Docling's full internal schema: every text/table/
+    picture is a node with $ref pointers, bounding boxes, and provenance --
+    accurate, but not something most consumers want to walk just to get "the
+    text" or "the tables". This collapses it into plain text, a heading list,
+    tables as actual row data (not just CSV files) with their source page
+    number, picture captions, and form fields, with no internal bookkeeping.
+    """
+    headings = [t.text for t in doc.texts if t.label in ("title", "section_header")]
+
+    tables = []
+    for i, table in enumerate(doc.tables):
+        df = table.export_to_dataframe()
+        rows = df.to_numpy().tolist()
+        tables.append(
+            {
+                "index": i + 1,
+                "page": _provenance_page(table),
+                "num_rows": df.shape[0],
+                "num_columns": df.shape[1],
+                "columns": [str(c) for c in df.columns],
+                "rows": rows,
+                "possibly_under_segmented": _looks_under_segmented(rows, df.shape[1]),
+            }
+        )
+
+    pictures = [
+        {"index": i + 1, "page": _provenance_page(picture), "caption": picture.caption_text(doc)}
+        for i, picture in enumerate(doc.pictures)
+    ]
+
+    return {
+        **build_metadata(doc, pdf_path, form_fields),
+        "headings": headings,
+        "text": doc.export_to_text(),
+        "tables": tables,
+        "pictures": pictures,
+        "form_fields": form_fields or {},
+    }
+
+
+def render(
+    doc: DoclingDocument,
+    fmt: OutputFormat,
+    form_fields: dict[str, str] | None = None,
+    pdf_path: Path | None = None,
+) -> str:
     """Render a parsed document to the requested text format.
 
     For json, form_fields are merged in under a "form_fields" key. For
     markdown/text/html, they're appended as their own section, since Docling's
     layout reconstruction can't reliably place them (see extract_form_fields).
+    simple needs pdf_path (see build_simple_dict).
     """
     form_fields = form_fields or {}
     if fmt == "json":
         data = doc.export_to_dict()
         data["form_fields"] = form_fields
         return json.dumps(data, indent=2, ensure_ascii=False)
+    if fmt == "simple":
+        if pdf_path is None:
+            raise ValueError("pdf_path is required to render the 'simple' format")
+        return json.dumps(build_simple_dict(doc, pdf_path, form_fields), indent=2, ensure_ascii=False)
     if fmt == "markdown":
         body = doc.export_to_markdown()
     elif fmt == "text":
@@ -232,9 +312,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--format",
         "-f",
-        choices=["json", "markdown", "text", "html", "doctags"],
+        choices=["json", "simple", "markdown", "text", "html", "doctags"],
         default="json",
-        help="Output format for the full document (default: json)",
+        help=(
+            "Output format for the full document (default: json). "
+            "'json' is Docling's full internal schema (refs, bounding boxes, "
+            "provenance); 'simple' is a flat JSON view (text, headings, table "
+            "rows, picture captions, form fields) with none of that bookkeeping."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -343,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
         doc = parse_pdf(args.pdf, build(force_full_page_ocr=True), page_range)
 
     form_fields = extract_form_fields(args.pdf, args.password)
-    write_text_output(render(doc, args.format, form_fields), args.format, args.output)
+    write_text_output(render(doc, args.format, form_fields, args.pdf), args.format, args.output)
 
     if args.tables_dir is not None:
         extract_tables(doc, args.pdf, args.tables_dir)

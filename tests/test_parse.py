@@ -48,6 +48,62 @@ def test_render_rejects_unknown_format(sample_pdf: Path):
         parse.render(doc, "yaml")
 
 
+def test_build_simple_dict_structure(sample_pdf: Path):
+    doc = parse.parse_pdf(sample_pdf)
+    simple = parse.build_simple_dict(doc, sample_pdf)
+    assert simple["filename"] == sample_pdf.name
+    assert "Hello World" in simple["text"]
+    assert simple["tables"] == []
+    assert simple["pictures"] == []
+    assert simple["form_fields"] == {}
+    assert isinstance(simple["headings"], list)
+
+
+def test_looks_under_segmented_flags_long_single_column_cell():
+    rows = [["x" * 200]]
+    assert parse._looks_under_segmented(rows, num_columns=1) is True
+
+
+def test_looks_under_segmented_ignores_short_single_column_cell():
+    rows = [["short caption"]]
+    assert parse._looks_under_segmented(rows, num_columns=1) is False
+
+
+def test_looks_under_segmented_ignores_multi_column_tables():
+    rows = [["x" * 200, "y" * 200]]
+    assert parse._looks_under_segmented(rows, num_columns=2) is False
+
+
+def test_provenance_page_reads_first_prov_entry():
+    fake_item = type("FakeItem", (), {"prov": [type("Prov", (), {"page_no": 5})()]})()
+    assert parse._provenance_page(fake_item) == 5
+
+
+def test_provenance_page_none_when_no_provenance():
+    fake_item = type("FakeItem", (), {"prov": []})()
+    assert parse._provenance_page(fake_item) is None
+
+
+def test_build_simple_dict_includes_form_fields(form_pdf: Path):
+    doc = parse.parse_pdf(form_pdf)
+    form_fields = parse.extract_form_fields(form_pdf)
+    simple = parse.build_simple_dict(doc, form_pdf, form_fields)
+    assert simple["form_fields"] == {"Name": "Jane Doe"}
+
+
+def test_render_simple_is_flat_json_with_no_internal_refs(sample_pdf: Path):
+    doc = parse.parse_pdf(sample_pdf)
+    raw = parse.render(doc, "simple", pdf_path=sample_pdf)
+    data = json.loads(raw)
+    assert "Hello World" in data["text"]
+    assert "$ref" not in raw
+
+
+def test_render_simple_requires_pdf_path():
+    with pytest.raises(ValueError):
+        parse.render(None, "simple")
+
+
 def test_extract_tables_with_no_tables_prints_message(sample_pdf: Path, tmp_path: Path, capsys):
     doc = parse.parse_pdf(sample_pdf)
     tables_dir = tmp_path / "tables"
@@ -134,6 +190,17 @@ def test_main_includes_form_fields_in_json_output(form_pdf: Path, tmp_path: Path
     assert exit_code == 0
     data = json.loads(out_path.read_text())
     assert data["form_fields"] == {"Name": "Jane Doe"}
+
+
+def test_main_simple_format_writes_flat_json(form_pdf: Path, tmp_path: Path):
+    out_path = tmp_path / "out.json"
+    exit_code = parse.main([str(form_pdf), "-f", "simple", "-o", str(out_path)])
+    assert exit_code == 0
+    data = json.loads(out_path.read_text())
+    assert data["form_fields"] == {"Name": "Jane Doe"}
+    assert "headings" in data
+    assert "tables" in data
+    assert "pictures" in data
 
 
 def test_build_converter_uses_pypdfium_backend_when_password_given():
