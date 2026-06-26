@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """CLI tool to parse PDFs into structured data using Docling.
 
-Covers every aspect of a PDF that Docling models: body text, tables (as CSV),
-embedded pictures and full page renders (as PNG), OCR for scanned content,
-form fields and key/value pairs (via the JSON/HTML exports), password-protected
-files, and document metadata.
+Covers every aspect of a PDF: body text, tables (as CSV), embedded pictures
+and full page renders (as PNG), OCR for scanned content, password-protected
+files, document metadata, and interactive AcroForm field values (read directly
+via pypdf, since Docling's layout reconstruction can mangle or disconnect them
+from their labels).
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 logging.getLogger("docling").setLevel(logging.CRITICAL)
 # docling_core.export_to_text() internally triggers its own bogus deprecation warning.
 logging.getLogger("docling_core").setLevel(logging.CRITICAL)
+# pypdf logs every minor PDF non-compliance it repairs (e.g. bad xref entries); not actionable for us.
+logging.getLogger("pypdf").setLevel(logging.CRITICAL)
 
 from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend  # noqa: E402
 from docling.datamodel.backend_options import PdfBackendOptions  # noqa: E402
@@ -31,6 +34,7 @@ from docling.document_converter import DocumentConverter, PdfFormatOption  # noq
 from docling.exceptions import ConversionError  # noqa: E402
 from docling_core.types.doc import DoclingDocument  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
+from pypdf import PdfReader  # noqa: E402
 
 OutputFormat = str  # one of "json", "markdown", "text", "html", "doctags"
 TABLE_MODES = {"fast": TableFormerMode.FAST, "accurate": TableFormerMode.ACCURATE}
@@ -79,19 +83,63 @@ def parse_pdf(
     return result.document
 
 
-def render(doc: DoclingDocument, fmt: OutputFormat) -> str:
-    """Render a parsed document to the requested text format."""
-    if fmt == "json":
-        return json.dumps(doc.export_to_dict(), indent=2, ensure_ascii=False)
-    if fmt == "markdown":
-        return doc.export_to_markdown()
-    if fmt == "text":
-        return doc.export_to_text()
+def extract_form_fields(pdf_path: Path, password: str | None = None) -> dict[str, str]:
+    """Read AcroForm field name/value pairs directly from the PDF.
+
+    Docling's OCR/layout pipeline reads what's rendered on the page, which for
+    interactive form widgets often disconnects an entered value from its question
+    label, leaks raw widget state names (e.g. "/Off") into the text, or fails to
+    decode custom comb-field fonts into readable glyphs. The PDF's own AcroForm
+    dictionary has the actual, correctly-labeled field values, so we read it
+    directly instead of relying on layout reconstruction. Returns {} for PDFs
+    with no form fields (or non-PDF inputs, where this isn't applicable).
+    """
+    try:
+        reader = PdfReader(str(pdf_path), password=password)
+        fields = reader.get_fields() or {}
+    except Exception:
+        return {}
+    return {name: str(field.get("/V") or "") for name, field in fields.items()}
+
+
+def _format_form_fields_block(form_fields: dict[str, str], fmt: OutputFormat) -> str:
     if fmt == "html":
-        return doc.export_to_html()
-    if fmt == "doctags":
+        items = "".join(f"<li><b>{name}</b>: {value}</li>" for name, value in form_fields.items())
+        return f"<h2>Form Field Values</h2><ul>{items}</ul>"
+    lines = ["## Form Field Values", ""]
+    lines += [f"- {name}: {value}" for name, value in form_fields.items()]
+    return "\n".join(lines)
+
+
+def render(doc: DoclingDocument, fmt: OutputFormat, form_fields: dict[str, str] | None = None) -> str:
+    """Render a parsed document to the requested text format.
+
+    For json, form_fields are merged in under a "form_fields" key. For
+    markdown/text/html, they're appended as their own section, since Docling's
+    layout reconstruction can't reliably place them (see extract_form_fields).
+    """
+    form_fields = form_fields or {}
+    if fmt == "json":
+        data = doc.export_to_dict()
+        data["form_fields"] = form_fields
+        return json.dumps(data, indent=2, ensure_ascii=False)
+    if fmt == "markdown":
+        body = doc.export_to_markdown()
+    elif fmt == "text":
+        body = doc.export_to_text()
+    elif fmt == "html":
+        body = doc.export_to_html()
+    elif fmt == "doctags":
         return doc.export_to_doctags()
-    raise ValueError(f"Unknown format: {fmt}")
+    else:
+        raise ValueError(f"Unknown format: {fmt}")
+
+    if not form_fields:
+        return body
+    block = _format_form_fields_block(form_fields, fmt)
+    if fmt == "html" and "</body>" in body:
+        return body.replace("</body>", block + "</body>")
+    return f"{body}\n\n{block}"
 
 
 def write_text_output(text: str, fmt: OutputFormat, output: Path | None) -> None:
@@ -148,7 +196,7 @@ def extract_page_images(doc: DoclingDocument, pdf_path: Path, page_images_dir: P
         print(f"Wrote page {page_no} image to {png_path}")
 
 
-def build_metadata(doc: DoclingDocument, pdf_path: Path) -> dict:
+def build_metadata(doc: DoclingDocument, pdf_path: Path, form_fields: dict[str, str] | None = None) -> dict:
     """Summarize document-level metadata: page count, element counts, file origin."""
     return {
         "filename": pdf_path.name,
@@ -157,6 +205,7 @@ def build_metadata(doc: DoclingDocument, pdf_path: Path) -> dict:
         "num_pictures": len(doc.pictures),
         "num_form_items": len(doc.form_items),
         "num_key_value_items": len(doc.key_value_items),
+        "num_acroform_fields": len(form_fields or {}),
         "origin": doc.origin.model_dump(mode="json") if doc.origin else None,
     }
 
@@ -256,7 +305,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: could not parse {args.pdf}: {e}", file=sys.stderr)
         return 1
 
-    write_text_output(render(doc, args.format), args.format, args.output)
+    form_fields = extract_form_fields(args.pdf, args.password)
+    write_text_output(render(doc, args.format, form_fields), args.format, args.output)
 
     if args.tables_dir is not None:
         extract_tables(doc, args.pdf, args.tables_dir)
@@ -265,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.page_images_dir is not None:
         extract_page_images(doc, args.pdf, args.page_images_dir)
     if args.metadata:
-        print(json.dumps(build_metadata(doc, args.pdf), indent=2), file=sys.stderr)
+        print(json.dumps(build_metadata(doc, args.pdf, form_fields), indent=2), file=sys.stderr)
 
     return 0
 

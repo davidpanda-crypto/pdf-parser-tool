@@ -2,8 +2,16 @@
 
 CLI tool that parses PDFs into structured data using [Docling](https://github.com/docling-project/docling).
 Handles text, tables, embedded pictures, full-page renders, OCR (for scanned
-pages), forms/key-value pairs, password-protected files, and document
-metadata.
+pages), password-protected files, document metadata, and interactive form
+(AcroForm) field values.
+
+Note on forms: for PDFs with fillable form fields, the entered values are read
+directly from the PDF's AcroForm data (via `pypdf`), not reconstructed from
+the rendered page layout. Docling's OCR/layout pipeline can disconnect a
+filled-in value from its question label, or fail to decode custom comb-field
+fonts — reading the AcroForm dictionary directly avoids that. These values
+appear under a `form_fields` key in JSON output, or a "Form Field Values"
+section appended to markdown/text/html output.
 
 ## Setup
 

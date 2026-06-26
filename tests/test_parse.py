@@ -71,7 +71,59 @@ def test_build_metadata_reports_counts(sample_pdf: Path):
     assert meta["num_pages"] == 1
     assert meta["num_tables"] == 0
     assert meta["num_pictures"] == 0
+    assert meta["num_acroform_fields"] == 0
     assert meta["origin"]["mimetype"] == "application/pdf"
+
+
+def test_extract_form_fields_on_plain_pdf_returns_empty(sample_pdf: Path):
+    assert parse.extract_form_fields(sample_pdf) == {}
+
+
+def test_extract_form_fields_reads_acroform_values(form_pdf: Path):
+    assert parse.extract_form_fields(form_pdf) == {"Name": "Jane Doe"}
+
+
+def test_render_json_merges_form_fields(form_pdf: Path):
+    doc = parse.parse_pdf(form_pdf)
+    form_fields = parse.extract_form_fields(form_pdf)
+    data = json.loads(parse.render(doc, "json", form_fields))
+    assert data["form_fields"] == {"Name": "Jane Doe"}
+
+
+def test_render_markdown_appends_form_fields_section(form_pdf: Path):
+    doc = parse.parse_pdf(form_pdf)
+    form_fields = parse.extract_form_fields(form_pdf)
+    markdown = parse.render(doc, "markdown", form_fields)
+    assert "## Form Field Values" in markdown
+    assert "- Name: Jane Doe" in markdown
+
+
+def test_render_html_inserts_form_fields_before_closing_body(form_pdf: Path):
+    doc = parse.parse_pdf(form_pdf)
+    form_fields = parse.extract_form_fields(form_pdf)
+    html = parse.render(doc, "html", form_fields)
+    assert "<h2>Form Field Values</h2>" in html
+    assert html.index("<h2>Form Field Values</h2>") < html.index("</body>")
+
+
+def test_render_without_form_fields_is_unchanged(sample_pdf: Path):
+    doc = parse.parse_pdf(sample_pdf)
+    assert "Form Field Values" not in parse.render(doc, "markdown", {})
+
+
+def test_build_metadata_reports_acroform_field_count(form_pdf: Path):
+    doc = parse.parse_pdf(form_pdf)
+    form_fields = parse.extract_form_fields(form_pdf)
+    meta = parse.build_metadata(doc, form_pdf, form_fields)
+    assert meta["num_acroform_fields"] == 1
+
+
+def test_main_includes_form_fields_in_json_output(form_pdf: Path, tmp_path: Path):
+    out_path = tmp_path / "out.json"
+    exit_code = parse.main([str(form_pdf), "-f", "json", "-o", str(out_path)])
+    assert exit_code == 0
+    data = json.loads(out_path.read_text())
+    assert data["form_fields"] == {"Name": "Jane Doe"}
 
 
 def test_build_converter_uses_pypdfium_backend_when_password_given():
